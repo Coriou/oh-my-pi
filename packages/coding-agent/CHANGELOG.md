@@ -35,6 +35,12 @@
 - Fixed the git TUI sidebar jumping back to the top of the file list after staging or unstaging a file; selection now stays on the nearest remaining row
 - Fixed the `aarch64-linux` `nix build` output segfaulting in the dynamic loader before startup by repointing the stale `DT_VERDEF` that `patchelf` leaves behind when it grows `.dynamic`, and surfaced smoke-test signal deaths in the build log instead of masking them ([#9881](https://github.com/can1357/oh-my-pi/issues/9881)).
 - Added custom RPC launcher builders so embedded clients can transport omp RPC through SSH and remote process managers.
+- Added opt-in ACP subagent activity surface `_omp/agents/list|update|progress|messages` ([#8728](https://github.com/can1357/oh-my-pi/pull/8728) by [@Alek7eeey](https://github.com/Alek7eeey)): roster, live progress, and transcripts for ACP clients, gated behind `clientCapabilities.extensions.agents`.
+
+### Changed
+
+- ACP `_omp/agents/progress` is now driven by the task executor's subagent channels instead of task tool-call updates, so background spawns stream live work and reach explicit terminal states.
+- `_omp/agents/messages` reads are capped per request and advisor transcripts are no longer readable.
 
 ## [18.0.7] - 2026-08-26
 
@@ -617,9 +623,6 @@
 ### Fixed
 
 - Fixed `omp stats` and `/stats` dashboards being unreachable from container hosts by accepting an explicit `--host` bind address while preserving the `127.0.0.1` default.
-### Added
-
-- Added ACP `_omp/agents/list` and `_omp/agents/update` extension methods exposing subagent lifecycle, current activity, and usage telemetry to ACP clients, plus a real-time `_omp/agents/progress` notification streaming each subagent's live work (intent, active tool, recent output, spend) and an `_omp/agents/messages` request returning a subagent's transcript including its `thinking` blocks. `tool_call`/`tool_call_update` notifications now carry a `toolName` extension field so clients can classify the task tool beyond the spec `kind`.
 
 ## [17.3.5] - 2026-08-16
 
