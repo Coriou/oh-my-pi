@@ -847,6 +847,14 @@ export class AcpAgent implements Agent {
 	#blobs = new BlobStore(getBlobsDir());
 	#agentsDebounce: Timer | undefined;
 	#registryUnsubscribe: (() => void) | undefined;
+	/**
+	 * Continuation cursors for `_omp/agents/messages` are only valid against the
+	 * transcript they were produced from. Keyed by caller identity (agentId, or
+	 * the resolved sessionFile for path-keyed polls); when a load/resume/fork
+	 * repoints an agent, the next poll with a stale offset restarts at zero with
+	 * `reset: true` instead of tearing into mid-record bytes.
+	 */
+	#messagesCursorBindings = new Map<string, { sessionFile: string }>();
 
 	constructor(connection: AgentSideConnection, createSession: CreateAcpSession, initialSession?: AgentSession) {
 		this.#connection = connection;
@@ -1380,14 +1388,18 @@ export class AcpAgent implements Agent {
 					typeof params.fromByte === "number" && Number.isFinite(params.fromByte)
 						? Math.max(0, Math.trunc(params.fromByte))
 						: 0;
-				const result = await readRpcSubagentTranscript(sessionFile, fromByte, {
+				const cursorKey = typeof params.agentId === "string" ? `id:${params.agentId}` : `file:${sessionFile}`;
+				const binding = this.#messagesCursorBindings.get(cursorKey);
+				const switched = binding !== undefined && binding.sessionFile !== sessionFile && fromByte > 0;
+				const result = await readRpcSubagentTranscript(sessionFile, switched ? 0 : fromByte, {
 					maxBytes: ACP_AGENTS_MESSAGES_MAX_BYTES,
 				});
+				this.#rememberMessagesCursor(cursorKey, sessionFile);
 				return {
 					sessionFile: result.sessionFile,
 					fromByte: result.fromByte,
 					nextByte: result.nextByte,
-					reset: result.reset,
+					reset: switched || result.reset,
 					messages: result.messages,
 					...(result.pendingOversizedRecord ? { pendingOversizedRecord: true } : {}),
 				};
@@ -1492,6 +1504,7 @@ export class AcpAgent implements Agent {
 			// registry mirror into an unhandled timer error.
 			if (this.#connection.signal.aborted) return;
 			let delivery: Promise<void> | undefined;
+
 			try {
 				delivery = this.#connection.extNotification("_omp/agents/update", {
 					agents: snapshotAcpAgents(),
@@ -1518,6 +1531,17 @@ export class AcpAgent implements Agent {
 			return;
 		}
 		delivery?.catch(error => logger.warn("Failed to push ACP agents/progress notification", { error }));
+	}
+
+	/** Track the transcript a continuation cursor is bound to; pruned oldest-first. */
+	#rememberMessagesCursor(key: string, sessionFile: string): void {
+		this.#messagesCursorBindings.delete(key);
+		this.#messagesCursorBindings.set(key, { sessionFile });
+		while (this.#messagesCursorBindings.size > 256) {
+			const oldest = this.#messagesCursorBindings.keys().next();
+			if (oldest.done) break;
+			this.#messagesCursorBindings.delete(oldest.value);
+		}
 	}
 
 	/**
