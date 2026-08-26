@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createAcpSessionFactory, type AcpSessionFactoryOptions } from "@oh-my-pi/pi-coding-agent/main";
+import { type AcpSessionFactoryOptions, createAcpSessionFactory } from "@oh-my-pi/pi-coding-agent/main";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 
