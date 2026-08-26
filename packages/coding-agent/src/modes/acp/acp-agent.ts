@@ -165,6 +165,16 @@ export interface AcpAgentSnapshot {
 	};
 }
 
+/**
+ * Live transcript path for a registry ref. The static `sessionFile` captured
+ * at registration goes stale after `session/load`, `session/resume`, or fork
+ * switches the underlying SessionManager, so the wire prefers the live
+ * session's current file and falls back only for parked/aborted refs.
+ */
+function resolveRefSessionFile(ref: AgentRef): string | null {
+	return ref.session?.sessionManager.getSessionFile() ?? ref.sessionFile;
+}
+
 /** Serialize a registry ref into the `_omp/agents/*` wire shape. Advisor refs are observability-only and excluded. */
 function toAcpAgentSnapshot(ref: AgentRef): AcpAgentSnapshot | undefined {
 	if (ref.kind === "advisor") return undefined;
@@ -175,7 +185,7 @@ function toAcpAgentSnapshot(ref: AgentRef): AcpAgentSnapshot | undefined {
 		kind: ref.kind,
 		parentId: ref.parentId,
 		status: ref.status,
-		sessionFile: ref.sessionFile,
+		sessionFile: resolveRefSessionFile(ref),
 		createdAt: ref.createdAt,
 		lastActivity: ref.lastActivity,
 		...(ref.activity ? { activity: ref.activity } : {}),
@@ -310,12 +320,12 @@ function resolveAcpAgentTranscript(params: { agentId?: unknown; sessionFile?: un
 	if (typeof params.sessionFile === "string") {
 		const registered = AgentRegistry.global()
 			.list()
-			.some(ref => ref.kind !== "advisor" && ref.sessionFile === params.sessionFile);
+			.some(ref => ref.kind !== "advisor" && resolveRefSessionFile(ref) === params.sessionFile);
 		if (registered) return params.sessionFile;
 	}
 	if (typeof params.agentId === "string") {
 		const ref = AgentRegistry.global().get(params.agentId);
-		return ref !== undefined && ref.kind !== "advisor" ? (ref.sessionFile ?? undefined) : undefined;
+		return ref !== undefined && ref.kind !== "advisor" ? (resolveRefSessionFile(ref) ?? undefined) : undefined;
 	}
 	return undefined;
 }
@@ -1379,6 +1389,7 @@ export class AcpAgent implements Agent {
 					nextByte: result.nextByte,
 					reset: result.reset,
 					messages: result.messages,
+					...(result.pendingOversizedRecord ? { pendingOversizedRecord: true } : {}),
 				};
 			}
 			case "_omp/sessions/listAll": {

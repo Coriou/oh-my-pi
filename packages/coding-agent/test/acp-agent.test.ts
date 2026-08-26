@@ -2161,6 +2161,98 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
+	it("follows session-manager transcript paths across switches", async () => {
+		const harness = await createHarness({ clientCapabilities: { extensions: { agents: true } } });
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+
+		// Production topology: the sdk attaches the live session to its registry
+		// ref, and the static path captured at registration goes stale the moment
+		// a load/fork switch repoints the SessionManager.
+		const registry = AgentRegistry.global();
+		registry.register({
+			id: "MainLive",
+			displayName: "MainLive",
+			kind: "main",
+			session: session as unknown as AgentSession,
+			status: "running",
+		});
+
+		// Build the target transcript with a REAL SessionManager so
+		// `setSessionFile` adopts it (hand-rolled jsonl fails header validation
+		// and would be reset to a fresh empty session instead).
+		const storedManager = SessionManager.create(harness.cwdA);
+		await storedManager.ensureOnDisk();
+		storedManager.appendMessage({ role: "user", content: "switched", timestamp: Date.now() });
+		const switchedPath = storedManager.getSessionFile()!;
+		expect(switchedPath).toBeTruthy();
+
+		// Exactly what a real `switchSession` performs under the hood; capture
+		// the bootstrap path first so we can prove it stops resolving.
+		const bootstrapPath = session.sessionManager.getSessionFile();
+		expect(bootstrapPath).toBeTruthy();
+		await session.sessionManager.setSessionFile(switchedPath);
+
+		// The roster reports the LIVE transcript path…
+		const roster = (await harness.agent.extMethod("_omp/agents/list", {})) as { agents: AcpAgentSnapshot[] };
+		expect(roster.agents.find(agent => agent.id === "MainLive")?.sessionFile).toBe(switchedPath);
+
+		// …transcripts resolve by the live path…
+		const byNewPath = await harness.agent.extMethod("_omp/agents/messages", { sessionFile: switchedPath });
+		expect((byNewPath.messages as unknown[]).length).toBe(1);
+		// …and by roster id…
+		const byId = await harness.agent.extMethod("_omp/agents/messages", { agentId: "MainLive" });
+		expect((byId.messages as unknown[]).length).toBe(1);
+		// …while the abandoned bootstrap path no longer resolves.
+		expect(bootstrapPath).not.toBe(switchedPath);
+		await expect(harness.agent.extMethod("_omp/agents/messages", { sessionFile: bootstrapPath })).rejects.toThrow(
+			"Unknown ACP agent",
+		);
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
+	it("surfaces pendingOversizedRecord through _omp/agents/messages", async () => {
+		const harness = await createHarness({ clientCapabilities: { extensions: { agents: true } } });
+		const headerLine = `${JSON.stringify({
+			type: "session",
+			id: "h0",
+			parentId: null,
+			timestamp: "2026-08-16T10:00:00.000Z",
+		})}\n`;
+		const transcript = path.join(harness.cwdA, "Huge.jsonl");
+		const giantLine = `${JSON.stringify({
+			type: "message",
+			id: "hm1",
+			parentId: "h0",
+			timestamp: "2026-08-16T10:00:01.000Z",
+			message: { role: "user", content: [{ type: "text", text: "x".repeat(9 * 1024 * 1024) }] },
+		})}`;
+		await fs.promises.writeFile(transcript, `${headerLine}${giantLine}`);
+		AgentRegistry.global().register({
+			id: "SubHuge",
+			displayName: "SubHuge",
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+			sessionFile: transcript,
+			status: "running",
+		});
+
+		const result = (await harness.agent.extMethod("_omp/agents/messages", {
+			agentId: "SubHuge",
+		})) as { nextByte: number; pendingOversizedRecord?: boolean };
+
+		// The record dwarfs the 512 KiB budget AND the 8 MiB ceiling: the cursor
+		// must stay put while the explicit flag explains why — never a silent EOF.
+		expect(result.pendingOversizedRecord).toBe(true);
+		expect(result.nextByte).toBe(Buffer.byteLength(headerLine, "utf8"));
+
+		harness.abortController.abort();
+		await Bun.sleep(0);
+	});
+
 	it("withholds the agents surface unless the client declares extensions.agents", async () => {
 		const harness = await createHarness();
 
