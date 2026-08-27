@@ -521,6 +521,34 @@ describe("readRpcSubagentTranscript", () => {
 		// record (no lookahead read ⇒ no premature flag key on the wire).
 		expect("pendingOversizedRecord" in page).toBe(false);
 	});
+	test("degenerate finite budgets are floored and still make progress", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-rpc-subagent-transcript-floor-"));
+		tempPaths.push(dir);
+		const sessionFile = path.join(dir, "session.jsonl");
+		const headerLine = `${JSON.stringify({ type: "session", id: "s1", timestamp: "2026-06-09T00:00:00.000Z", cwd: dir })}\n`;
+		const messageLine = `${JSON.stringify({
+			type: "message",
+			id: "m1",
+			parentId: "s1",
+			timestamp: "2026-06-09T00:00:01.000Z",
+			message: { role: "user", content: [{ type: "text", text: "small" }] },
+		})}\n`;
+		await Bun.write(sessionFile, `${headerLine}${messageLine}`);
+
+		// A paginator feeding any validly-typed budget must observe cursor
+		// movement: zero/negative/fractional values floor to a 1-byte minimum,
+		// so polling terminates instead of seeing an unchanged nextByte forever.
+		for (const maxBytes of [0, -5, 0.4]) {
+			const read = await readRpcSubagentTranscript(sessionFile, 0, { maxBytes });
+			expect(read.nextByte).toBe(Buffer.byteLength(headerLine, "utf8"));
+			expect(read.reset).toBe(false);
+			expect(read.pendingOversizedRecord).toBeUndefined();
+		}
+		// Non-finite budgets keep their documented meaning: the cap is off.
+		const uncapped = await readRpcSubagentTranscript(sessionFile, 0, { maxBytes: Number.NaN });
+		expect(uncapped.messages).toHaveLength(1);
+		expect(uncapped.nextByte).toBe(Buffer.byteLength(`${headerLine}${messageLine}`, "utf8"));
+	});
 });
 
 describe("RpcClient subagent frames", () => {

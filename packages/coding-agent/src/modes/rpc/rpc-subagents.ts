@@ -84,8 +84,9 @@ export interface RpcSubagentTranscriptReadOptions {
 	/**
 	 * Upper bound on transcript bytes consumed per call, starting at `fromByte`.
 	 * The window is clamped to complete lines and full UTF-8 code points, so
-	 * continuation reads at `nextByte` never lose data. Values below 1 normalize
-	 * to an empty page (cursor unchanged); non-finite values disable the cap.
+	 * continuation reads at `nextByte` never lose data. Values below 1 are
+	 * floored to a single byte so every finite budget makes forward progress;
+	 * non-finite values disable the cap.
 	 */
 	maxBytes?: number;
 	/**
@@ -124,7 +125,7 @@ export async function readRpcSubagentTranscript(
 	}
 	const maxBytes =
 		options?.maxBytes !== undefined && Number.isFinite(options.maxBytes)
-			? Math.max(0, Math.trunc(options.maxBytes))
+			? Math.max(1, Math.trunc(options.maxBytes))
 			: undefined;
 	const oversizedCeilingBytes =
 		options?.oversizedRecordCeilingBytes !== undefined &&
