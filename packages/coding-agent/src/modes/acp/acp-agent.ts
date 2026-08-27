@@ -3002,6 +3002,9 @@ export class AcpAgent implements Agent {
 				},
 				branch: async entryId => {
 					const result = await record.session.branch(entryId);
+					// branch() creates a new transcript file in place — same
+					// roster-staleness hazard as switchSession.
+					if (!result.cancelled) this.#scheduleTranscriptRosterRefresh();
 					return { cancelled: result.cancelled };
 				},
 				navigateTree: async (targetId, options) => {

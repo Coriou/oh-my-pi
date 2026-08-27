@@ -138,6 +138,24 @@ function messageText(message: { content?: unknown }): string | undefined {
 	return first?.text;
 }
 
+/**
+ * Minimal ExtensionRuntime stand-in: captures the bridge handlers object the
+ * ACP agent passes to `initialize`, so tests can drive
+ * newSession/switchSession/branch transitions exactly as extensions would.
+ */
+class CapturingExtensionRunner {
+	handlers: Record<string, (...args: never[]) => unknown> | undefined;
+	async initialize(...surfaces: unknown[]): Promise<void> {
+		this.handlers = surfaces.find(
+			surface => typeof surface === "object" && surface !== null && "branch" in surface,
+		) as Record<string, (...args: never[]) => unknown> | undefined;
+	}
+	async emit(_event: unknown): Promise<void> {}
+	// Bootstrap command advertisement iterates registered extension commands.
+	getRegisteredCommands(): unknown[] {
+		return [];
+	}
+}
 class FakeAgentSession {
 	sessionManager: SessionManager;
 	sessionId: string;
@@ -517,6 +535,8 @@ async function createHarness(
 		extNotification?: "sync-throw" | "async-reject";
 		/** Runs before a notification is recorded, so a test can delay one delivery. */
 		sessionUpdateHook?: (notification: SessionNotification) => Promise<void> | void;
+		/** Runs inside the factory before the handle returns, so tests can attach fakes (e.g. an extension runner). */
+		decorateCreatedSession?: (session: FakeAgentSession) => void;
 	} = {},
 ): Promise<AgentHarness> {
 	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-acp-test-"));
@@ -567,6 +587,7 @@ async function createHarness(
 	sessions.push(initialSession);
 	const factory = async (cwd: string, factoryOptions?: { interactivePrompts?: boolean }) => {
 		const session = new FakeAgentSession(cwd);
+		options.decorateCreatedSession?.(session);
 		sessions.push(session);
 		const setToolUIContext = vi.fn();
 		const eventBus = new EventBus();
@@ -2339,6 +2360,67 @@ describe("ACP agent", () => {
 		expect(page2.messages.map(messageText)).toEqual(["two"]);
 	});
 
+	it("broadcasts roster updates after extension-driven branch and switchSession", async () => {
+		vi.useFakeTimers();
+		try {
+			const runner = new CapturingExtensionRunner();
+			const harness = await createHarness({
+				clientCapabilities: { extensions: { agents: true } },
+				decorateCreatedSession: session => {
+					session.extensionRunner = runner as unknown as FakeAgentSession["extensionRunner"];
+				},
+			});
+			const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+			const session = harness.findSession(created.sessionId)!;
+			AgentRegistry.global().register({
+				id: "MainBridge",
+				displayName: "MainBridge",
+				kind: "main",
+				session: session as unknown as AgentSession,
+				status: "running",
+			});
+
+			// Drain the initialize-time snapshot, then baseline.
+			vi.advanceTimersByTime(ACP_AGENTS_DEBOUNCE_MS);
+			await Promise.resolve();
+			const baseline = harness.extNotifications.length;
+
+			// Extension branch: fork() mints a NEW transcript file in place; no
+			// registry event fires, so only our explicit refresh keeps clients
+			// current.
+			expect(runner.handlers?.branch).toBeTypeOf("function");
+			await (runner.handlers!.branch as (entryId: string) => Promise<{ cancelled: boolean }>)("entry-1");
+			const branchPath = session.sessionManager.getSessionFile()!;
+			vi.advanceTimersByTime(ACP_AGENTS_DEBOUNCE_MS);
+			await Promise.resolve();
+			const branchUpdates = harness.extNotifications
+				.slice(baseline)
+				.filter(notification => notification.method === "_omp/agents/update");
+			expect(branchUpdates).toHaveLength(1);
+			expect(branchUpdates[0]!.params.agents!.find(agent => agent.id === "MainBridge")?.sessionFile).toBe(
+				branchPath,
+			);
+
+			// Extension switchSession to a different real store behaves identically.
+			const switchedStore = SessionManager.create(harness.cwdA);
+			await switchedStore.ensureOnDisk();
+			switchedStore.appendMessage({ role: "user", content: "switched", timestamp: Date.now() });
+			const switchPath = switchedStore.getSessionFile()!;
+			const preSwitch = harness.extNotifications.length;
+			await (runner.handlers!.switchSession as (sessionPath: string) => Promise<{ cancelled: boolean }>)(switchPath);
+			vi.advanceTimersByTime(ACP_AGENTS_DEBOUNCE_MS);
+			await Promise.resolve();
+			const switchUpdates = harness.extNotifications
+				.slice(preSwitch)
+				.filter(notification => notification.method === "_omp/agents/update");
+			expect(switchUpdates).toHaveLength(1);
+			expect(switchUpdates[0]!.params.agents!.find(agent => agent.id === "MainBridge")?.sessionFile).toBe(
+				switchPath,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it("withholds the agents surface unless the client declares extensions.agents", async () => {
 		const harness = await createHarness();
 
