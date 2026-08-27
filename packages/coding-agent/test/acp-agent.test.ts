@@ -2291,73 +2291,85 @@ describe("ACP agent", () => {
 
 	it("resets message cursors bound to a transcript when the agent switches files", async () => {
 		const harness = await createHarness({ clientCapabilities: { extensions: { agents: true } } });
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		AgentRegistry.global().register({
-			id: "MainCursor",
-			displayName: "MainCursor",
-			kind: "main",
-			session: session as unknown as AgentSession,
-			status: "running",
-		});
+		let otherStore: SessionManager | undefined;
+		try {
+			const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+			const session = harness.findSession(created.sessionId)!;
+			AgentRegistry.global().register({
+				id: "MainCursor",
+				displayName: "MainCursor",
+				kind: "main",
+				session: session as unknown as AgentSession,
+				status: "running",
+			});
 
-		// Transcript A on the bootstrap store: two messages so a continuation has
-		// somewhere real to land.
-		session.sessionManager.appendMessage({ role: "user", content: "a1", timestamp: Date.now() });
-		session.sessionManager.appendMessage({ role: "user", content: "a2", timestamp: Date.now() });
-		const first = (await harness.agent.extMethod("_omp/agents/messages", { agentId: "MainCursor" })) as {
-			nextByte: number;
-			reset: boolean;
-			messages: Array<{ content?: unknown }>;
-		};
-		expect(first.reset).toBe(false);
-		expect(first.messages.map(messageText)).toEqual(["a1", "a2"]);
+			// Transcript A on the bootstrap store: two messages so a continuation has
+			// somewhere real to land.
+			session.sessionManager.appendMessage({ role: "user", content: "a1", timestamp: Date.now() });
+			session.sessionManager.appendMessage({ role: "user", content: "a2", timestamp: Date.now() });
+			const first = (await harness.agent.extMethod("_omp/agents/messages", { agentId: "MainCursor" })) as {
+				nextByte: number;
+				reset: boolean;
+				messages: Array<{ content?: unknown }>;
+			};
+			expect(first.reset).toBe(false);
+			expect(first.messages.map(messageText)).toEqual(["a1", "a2"]);
 
-		// Switch the ref to a DIFFERENT transcript whose size exceeds the stored
-		// cursor — a naive numeric continuation would land mid-record or, worse,
-		// silently stream only the tail of B while claiming progress.
-		const otherStore = SessionManager.create(harness.cwdA);
-		await otherStore.ensureOnDisk();
-		otherStore.appendMessage({ role: "user", content: "b1", timestamp: Date.now() });
-		await session.sessionManager.setSessionFile(otherStore.getSessionFile()!);
+			// Switch the ref to a DIFFERENT transcript whose size exceeds the stored
+			// cursor — a naive numeric continuation would land mid-record or, worse,
+			// silently stream only the tail of B while claiming progress.
+			otherStore = SessionManager.create(harness.cwdA);
+			await otherStore.ensureOnDisk();
+			otherStore.appendMessage({ role: "user", content: "b1", timestamp: Date.now() });
+			await session.sessionManager.setSessionFile(otherStore.getSessionFile()!);
 
-		const after = (await harness.agent.extMethod("_omp/agents/messages", {
-			agentId: "MainCursor",
-			fromByte: first.nextByte,
-		})) as { reset: boolean; nextByte: number; messages: Array<{ content?: unknown }> };
-		expect(after.reset).toBe(true);
-		expect(after.messages.map(messageText)).toEqual(["b1"]);
+			const after = (await harness.agent.extMethod("_omp/agents/messages", {
+				agentId: "MainCursor",
+				fromByte: first.nextByte,
+			})) as { reset: boolean; nextByte: number; messages: Array<{ content?: unknown }> };
+			expect(after.reset).toBe(true);
+			expect(after.messages.map(messageText)).toEqual(["b1"]);
+		} finally {
+			await harness.agent.dispose();
+			harness.abortController.abort();
+			await otherStore?.close();
+		}
 	});
 
 	it("keeps continuations stable while the transcript identity is unchanged", async () => {
 		const harness = await createHarness({ clientCapabilities: { extensions: { agents: true } } });
-		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
-		const session = harness.findSession(created.sessionId)!;
-		AgentRegistry.global().register({
-			id: "MainStable",
-			displayName: "MainStable",
-			kind: "main",
-			session: session as unknown as AgentSession,
-			status: "running",
-		});
-		session.sessionManager.appendMessage({ role: "user", content: "one", timestamp: Date.now() });
+		try {
+			const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+			const session = harness.findSession(created.sessionId)!;
+			AgentRegistry.global().register({
+				id: "MainStable",
+				displayName: "MainStable",
+				kind: "main",
+				session: session as unknown as AgentSession,
+				status: "running",
+			});
+			session.sessionManager.appendMessage({ role: "user", content: "one", timestamp: Date.now() });
 
-		const page1 = (await harness.agent.extMethod("_omp/agents/messages", { agentId: "MainStable" })) as {
-			reset: boolean;
-			nextByte: number;
-			messages: Array<{ content?: unknown }>;
-		};
-		expect(page1.reset).toBe(false);
+			const page1 = (await harness.agent.extMethod("_omp/agents/messages", { agentId: "MainStable" })) as {
+				reset: boolean;
+				nextByte: number;
+				messages: Array<{ content?: unknown }>;
+			};
+			expect(page1.reset).toBe(false);
 
-		// Same file grows: continuation continues — no spurious reset, and the
-		// union of both pages covers every record exactly once.
-		session.sessionManager.appendMessage({ role: "user", content: "two", timestamp: Date.now() + 1 });
-		const page2 = (await harness.agent.extMethod("_omp/agents/messages", {
-			agentId: "MainStable",
-			fromByte: page1.nextByte,
-		})) as { reset: boolean; messages: Array<{ content?: unknown }> };
-		expect(page2.reset).toBe(false);
-		expect(page2.messages.map(messageText)).toEqual(["two"]);
+			// Same file grows: continuation continues — no spurious reset, and the
+			// union of both pages covers every record exactly once.
+			session.sessionManager.appendMessage({ role: "user", content: "two", timestamp: Date.now() + 1 });
+			const page2 = (await harness.agent.extMethod("_omp/agents/messages", {
+				agentId: "MainStable",
+				fromByte: page1.nextByte,
+			})) as { reset: boolean; messages: Array<{ content?: unknown }> };
+			expect(page2.reset).toBe(false);
+			expect(page2.messages.map(messageText)).toEqual(["two"]);
+		} finally {
+			await harness.agent.dispose();
+			harness.abortController.abort();
+		}
 	});
 
 	it("broadcasts roster updates after extension-driven branch and switchSession", async () => {
