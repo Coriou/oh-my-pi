@@ -208,6 +208,6 @@ task tool beyond the spec `kind` (which maps it to `other`).
   spawns (a subagent spawning further agents) stream only their own channel
   traffic, and deeper descendants surface through the registry-driven
   `_omp/agents/update` roster once they register.
-- The surface is transport-agnostic: `omp acp` over stdio and the embedded
-  ACP-channel transport (`mcpServers` type `acp`) both dispatch through the same
-  `extMethod`/`extNotification` hooks.
+- The surface is transport-agnostic: `omp acp` over stdio and embedders that
+  construct sessions directly share the same `extMethod`/`extNotification`
+  dispatch through `AgentSideConnection`.

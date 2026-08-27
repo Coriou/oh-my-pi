@@ -84,7 +84,8 @@ export interface RpcSubagentTranscriptReadOptions {
 	/**
 	 * Upper bound on transcript bytes consumed per call, starting at `fromByte`.
 	 * The window is clamped to complete lines and full UTF-8 code points, so
-	 * continuation reads at `nextByte` never lose data.
+	 * continuation reads at `nextByte` never lose data. Values below 1 normalize
+	 * to an empty page (cursor unchanged); non-finite values disable the cap.
 	 */
 	maxBytes?: number;
 	/**
