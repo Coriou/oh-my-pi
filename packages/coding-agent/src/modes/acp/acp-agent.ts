@@ -1544,6 +1544,13 @@ export class AcpAgent implements Agent {
 		}
 	}
 
+	/** Roster push for transcript repoints that bypass the registry (extension-style switches). */
+	#scheduleTranscriptRosterRefresh(): void {
+		if (this.#clientCapabilities?.extensions?.agents === true) {
+			this.#scheduleAgentsBroadcast();
+		}
+	}
+
 	/**
 	 * Subscribe a record's task-event channels so executor-side subagent work
 	 * streams to the client as `_omp/agents/progress`. Driven by channels —
@@ -1660,7 +1667,9 @@ export class AcpAgent implements Agent {
 			await this.#disposeStandaloneSession(session);
 			throw error;
 		}
-		return await this.#registerPreparedSession(session, params.mcpServers ?? [], setToolUIContext, eventBus);
+		const record = await this.#registerPreparedSession(session, params.mcpServers ?? [], setToolUIContext, eventBus);
+		this.#scheduleTranscriptRosterRefresh();
+		return record;
 	}
 
 	async #openStoredSession(
@@ -1683,7 +1692,9 @@ export class AcpAgent implements Agent {
 			await this.#disposeStandaloneSession(session);
 			throw error;
 		}
-		return await this.#registerPreparedSession(session, mcpServers, setToolUIContext, eventBus);
+		const record = await this.#registerPreparedSession(session, mcpServers, setToolUIContext, eventBus);
+		this.#scheduleTranscriptRosterRefresh();
+		return record;
 	}
 
 	async #registerPreparedSession(
@@ -2984,6 +2995,9 @@ export class AcpAgent implements Agent {
 					if (success && options?.setup) {
 						await options.setup(record.session.sessionManager);
 					}
+					// In-place transcript switch: no registry event fires, so the
+					// roster push must be scheduled explicitly.
+					if (success) this.#scheduleTranscriptRosterRefresh();
 					return { cancelled: !success };
 				},
 				branch: async entryId => {
@@ -2996,6 +3010,7 @@ export class AcpAgent implements Agent {
 				},
 				switchSession: async sessionPath => {
 					const success = await record.session.switchSession(sessionPath);
+					if (success) this.#scheduleTranscriptRosterRefresh();
 					return { cancelled: !success };
 				},
 				reload: async () => {

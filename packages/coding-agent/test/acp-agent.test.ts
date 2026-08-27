@@ -2247,14 +2247,22 @@ describe("ACP agent", () => {
 			status: "running",
 		});
 
-		const result = (await harness.agent.extMethod("_omp/agents/messages", {
+		const first = (await harness.agent.extMethod("_omp/agents/messages", {
 			agentId: "SubHuge",
 		})) as { nextByte: number; pendingOversizedRecord?: boolean };
 
-		// The record dwarfs the 512 KiB budget AND the 8 MiB ceiling: the cursor
-		// must stay put while the explicit flag explains why — never a silent EOF.
-		expect(result.pendingOversizedRecord).toBe(true);
-		expect(result.nextByte).toBe(Buffer.byteLength(headerLine, "utf8"));
+		// Page one streams the header normally — ordinary pages cost nothing extra.
+		expect(first.pendingOversizedRecord).toBeUndefined();
+		expect(first.nextByte).toBe(Buffer.byteLength(headerLine, "utf8"));
+
+		// The poll that REACHES the ceiling-dwarfing record stops advancing and
+		// explains why — never a silent EOF, never an exception.
+		const stalled = (await harness.agent.extMethod("_omp/agents/messages", {
+			agentId: "SubHuge",
+			fromByte: first.nextByte,
+		})) as { nextByte: number; pendingOversizedRecord?: boolean };
+		expect(stalled.pendingOversizedRecord).toBe(true);
+		expect(stalled.nextByte).toBe(first.nextByte);
 
 		harness.abortController.abort();
 		await Bun.sleep(0);

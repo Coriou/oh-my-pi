@@ -499,6 +499,28 @@ describe("readRpcSubagentTranscript", () => {
 		expect(uncapped.pendingOversizedRecord).toBeUndefined();
 		expect(uncapped.reset).toBe(false);
 	});
+
+	test("ordinary pages carry no oversized marker", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-rpc-subagent-transcript-plain-"));
+		tempPaths.push(dir);
+		const sessionFile = path.join(dir, "session.jsonl");
+		const headerLine = `${JSON.stringify({ type: "session", id: "s1", timestamp: "2026-06-09T00:00:00.000Z", cwd: dir })}\n`;
+		const messageLine = `${JSON.stringify({
+			type: "message",
+			id: "m1",
+			parentId: "s1",
+			timestamp: "2026-06-09T00:00:01.000Z",
+			message: { role: "user", content: [{ type: "text", text: "small" }] },
+		})}\n`;
+		await Bun.write(sessionFile, `${headerLine}${messageLine}`);
+
+		const page = await readRpcSubagentTranscript(sessionFile, 0, { maxBytes: 512 });
+
+		expect(page.messages).toHaveLength(1);
+		// A window ending on a complete line must not speculate about the next
+		// record (no lookahead read ⇒ no premature flag key on the wire).
+		expect("pendingOversizedRecord" in page).toBe(false);
+	});
 });
 
 describe("RpcClient subagent frames", () => {

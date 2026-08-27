@@ -155,20 +155,8 @@ export async function readRpcSubagentTranscript(
 	const windowEnd = clampWindowToUtf8Boundary(bytes);
 	const newlineIdx = bytes.lastIndexOf(0x0a, windowEnd - 1);
 	const consumed = newlineIdx >= 0 ? newlineIdx + 1 : 0;
-	let pendingOversizedRecord = consumed === 0 && ceilingReached;
+	const pendingOversizedRecord = consumed === 0 && ceilingReached;
 
-	// Same-response lookahead: when this window ended on a complete line and
-	// the NEXT record alone cannot fit inside the ceiling, warn now instead of
-	// letting the client poll once more into an unchanged cursor.
-	if (!pendingOversizedRecord && maxBytes !== undefined && consumed > 0) {
-		const peekStart = startByte + consumed;
-		const peekEnd = Math.min(size, peekStart + oversizedCeilingBytes);
-		if (peekEnd - peekStart >= oversizedCeilingBytes) {
-			const peek = new Uint8Array(await file.slice(peekStart, peekEnd).arrayBuffer());
-			const peekHasNewline = peek.lastIndexOf(0x0a, clampWindowToUtf8Boundary(peek) - 1) >= 0;
-			pendingOversizedRecord = !peekHasNewline;
-		}
-	}
 	const nextByte = startByte + consumed;
 	const text = consumed > 0 ? new TextDecoder().decode(bytes.subarray(0, consumed)) : "";
 	const entries = text.length > 0 ? parseSessionEntries(text) : [];
